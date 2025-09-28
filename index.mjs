@@ -7,25 +7,25 @@ import { fetch } from "undici";
 const app = express();
 const PORT = process.env.PORT || 8080;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
-const ACTIONS_API_KEY = process.env.ACTIONS_API_KEY || "sU2qYsKtLi5ys9MfbHclk"; // fallback if not set
+const ACTIONS_API_KEY = process.env.ACTIONS_API_KEY || "sU2qYsKtLi5ys9MfbHclk"; // change on Render if desired
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json());
 app.use(morgan("dev"));
 
-// --- API Key auth middleware ---
+// --- API Key auth middleware (header: x-api-key) ---
 const requireApiKey = (req, res, next) => {
   const key = req.headers["x-api-key"];
   if (ACTIONS_API_KEY && key === ACTIONS_API_KEY) return next();
   return res.status(401).json({ ok: false, error: "Unauthorized" });
 };
 
-// Health check
+// Health check (no auth)
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "odds-gpt-backend" });
 });
 
-// OpenAPI schema for GPT Actions
+// OpenAPI schema (for GPT Actions import; no auth)
 app.get("/openapi.json", (req, res) => {
   const serverUrl = "https://odds-gpt-backend.onrender.com";
   const schema = {
@@ -35,20 +35,45 @@ app.get("/openapi.json", (req, res) => {
     components: {
       securitySchemes: {
         apiKeyAuth: { type: "apiKey", in: "header", name: "x-api-key" }
-      }
+      },
+      schemas: {} // must be an object (even if empty)
     },
     security: [{ apiKeyAuth: [] }],
     paths: {
       "/api/sports": {
         get: {
+          operationId: "getSports",
           summary: "List sports and keys",
-          responses: { "200": { description: "OK" } }
+          description: "Returns sports available from The Odds API.",
+          parameters: [
+            {
+              name: "all",
+              in: "query",
+              description: "Include inactive/future sports. Default: true",
+              required: false,
+              schema: { type: "string", enum: ["true", "false"], default: "true" }
+            }
+          ],
+          responses: {
+            "200": { description: "Successful response" }
+          }
         }
       },
       "/api/odds": {
         get: {
+          operationId: "getOdds",
           summary: "Fetch odds",
-          responses: { "200": { description: "OK" } }
+          description: "Proxy to The Odds API v4 for a given sport.",
+          parameters: [
+            { name: "sport", in: "query", required: true, schema: { type: "string", example: "americanfootball_nfl" } },
+            { name: "region", in: "query", required: false, schema: { type: "string", default: "us" } },
+            { name: "markets", in: "query", required: false, schema: { type: "string", default: "h2h" } },
+            { name: "bookmakers", in: "query", required: false, schema: { type: "string" } },
+            { name: "dateFormat", in: "query", required: false, schema: { type: "string", default: "iso" } }
+          ],
+          responses: {
+            "200": { description: "Successful response" }
+          }
         }
       }
     }
@@ -56,10 +81,10 @@ app.get("/openapi.json", (req, res) => {
   res.json(schema);
 });
 
-// Protect API routes
+// Apply API key auth to all /api/* routes
 app.use("/api", requireApiKey);
 
-// List sports
+// --- /api/sports ---
 app.get("/api/sports", async (req, res) => {
   try {
     if (!ODDS_API_KEY) return res.status(500).json({ ok: false, error: "Missing ODDS_API_KEY" });
@@ -70,19 +95,24 @@ app.get("/api/sports", async (req, res) => {
     url.searchParams.set("all", all);
 
     const r = await fetch(url);
-    const data = await r.json();
+    const text = await r.text();
+    if (!r.ok) return res.status(r.status).json({ ok: false, status: r.status, error: text });
+
+    let data;
+    try { data = JSON.parse(text); } catch { return res.status(502).json({ ok:false, error:"Invalid JSON from provider", raw:text }); }
     res.json({ ok: true, count: Array.isArray(data) ? data.length : undefined, data });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
 });
 
-// Odds proxy
+// --- /api/odds ---
 app.get("/api/odds", async (req, res) => {
   try {
     if (!ODDS_API_KEY) return res.status(500).json({ ok: false, error: "Missing ODDS_API_KEY" });
 
     const { sport = "upcoming", region = "us", markets = "h2h", bookmakers, dateFormat = "iso" } = req.query;
+
     const url = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/odds`);
     url.searchParams.set("apiKey", ODDS_API_KEY);
     url.searchParams.set("regions", String(region));
@@ -92,7 +122,11 @@ app.get("/api/odds", async (req, res) => {
     if (bookmakers) url.searchParams.set("bookmakers", String(bookmakers));
 
     const r = await fetch(url);
-    const data = await r.json();
+    const text = await r.text();
+    if (!r.ok) return res.status(r.status).json({ ok: false, status: r.status, error: text });
+
+    let data;
+    try { data = JSON.parse(text); } catch { return res.status(502).json({ ok:false, error:"Invalid JSON from provider", raw:text }); }
     res.json({ ok: true, sport, region, markets, count: Array.isArray(data) ? data.length : undefined, data });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
