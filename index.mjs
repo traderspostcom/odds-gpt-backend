@@ -7,17 +7,19 @@ import { fetch } from "undici";
 const app = express();
 const PORT = process.env.PORT || 8080;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
-const ACTIONS_API_KEY = process.env.ACTIONS_API_KEY || "sU2qYsKtLi5ys9MfbHclk";
+// IMPORTANT: no default here. If not set, auth is OFF.
+const ACTIONS_API_KEY = process.env.ACTIONS_API_KEY; 
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || "*" }));
 app.use(express.json());
 app.use(morgan("dev"));
 
-// ---- Flexible API-key auth: x-api-key header OR Authorization: Bearer <key> OR ?api_key=... ----
+// ---- Optional API-key auth (header x-api-key OR Bearer OR ?api_key=...) ----
 const requireApiKey = (req, res, next) => {
-  // allow preflight
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  // If no ACTIONS_API_KEY is configured, **do not enforce auth** (open).
+  if (!ACTIONS_API_KEY) return next();
 
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   const headerKey = req.headers["x-api-key"];
   const bearer = (req.headers.authorization || "").startsWith("Bearer ")
     ? req.headers.authorization.slice(7)
@@ -25,21 +27,21 @@ const requireApiKey = (req, res, next) => {
   const queryKey = typeof req.query.api_key === "string" ? req.query.api_key : undefined;
 
   const provided = headerKey || bearer || queryKey;
-  if (ACTIONS_API_KEY && provided === ACTIONS_API_KEY) return next();
+  if (provided === ACTIONS_API_KEY) return next();
   return res.status(401).json({ ok: false, error: "Unauthorized" });
 };
 
-// Health check (no auth)
+// Health check
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "odds-gpt-backend" });
 });
 
-// OpenAPI schema (no auth)
+// OpenAPI schema (no auth). Security left empty so GPT can call with "None".
 app.get("/openapi.json", (req, res) => {
   const serverUrl = "https://odds-gpt-backend.onrender.com";
   const schema = {
     openapi: "3.1.0",
-    info: { title: "Odds GPT Backend", version: "1.0.1" },
+    info: { title: "Odds GPT Backend", version: "1.0.2" },
     servers: [{ url: serverUrl }],
     components: {
       securitySchemes: {
@@ -48,8 +50,8 @@ app.get("/openapi.json", (req, res) => {
       },
       schemas: {}
     },
-    // OR semantics: either header OR query key will satisfy auth
-    security: [{ apiKeyHeader: [] }, { apiKeyQuery: [] }],
+    // Empty -> no auth required by default
+    security: [],
     paths: {
       "/api/sports": {
         get: {
@@ -88,7 +90,7 @@ app.get("/openapi.json", (req, res) => {
   res.json(schema);
 });
 
-// Protect API routes
+// Protect /api only if ACTIONS_API_KEY is set
 app.use("/api", requireApiKey);
 
 // /api/sports
