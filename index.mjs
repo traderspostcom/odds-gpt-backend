@@ -17,13 +17,32 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "odds-gpt-backend" });
 });
 
-// Simple Odds API proxy
-// Example: /api/odds?sport=nfl&region=us&markets=h2h
+// List sports (keys & details)
+app.get("/api/sports", async (req, res) => {
+  try {
+    if (!ODDS_API_KEY) return res.status(500).json({ ok: false, error: "Missing ODDS_API_KEY" });
+
+    const all = (req.query.all ?? "true").toString(); // "true" to include inactive/future
+    const url = new URL("https://api.the-odds-api.com/v4/sports");
+    url.searchParams.set("apiKey", ODDS_API_KEY);
+    url.searchParams.set("all", all);
+
+    const r = await fetch(url);
+    const text = await r.text();
+    if (!r.ok) return res.status(r.status).json({ ok: false, status: r.status, error: text });
+
+    let data; try { data = JSON.parse(text); } catch { return res.status(502).json({ ok:false, error:"Invalid JSON from provider", raw:text }); }
+
+    res.json({ ok: true, count: Array.isArray(data) ? data.length : undefined, data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Odds proxy (H2H / spreads / totals, etc.)
 app.get("/api/odds", async (req, res) => {
   try {
-    if (!ODDS_API_KEY) {
-      return res.status(500).json({ ok: false, error: "Missing ODDS_API_KEY" });
-    }
+    if (!ODDS_API_KEY) return res.status(500).json({ ok: false, error: "Missing ODDS_API_KEY" });
 
     const {
       sport = "upcoming",
@@ -35,38 +54,19 @@ app.get("/api/odds", async (req, res) => {
 
     const url = new URL(`https://api.the-odds-api.com/v4/sports/${sport}/odds`);
     url.searchParams.set("apiKey", ODDS_API_KEY);
-    url.searchParams.set("regions", region);               // e.g. us, eu
-    url.searchParams.set("markets", markets);              // e.g. h2h,spreads,totals
-    url.searchParams.set("oddsFormat", "american");        // american | decimal
+    url.searchParams.set("regions", String(region));
+    url.searchParams.set("markets", String(markets));
+    url.searchParams.set("oddsFormat", "american");
     url.searchParams.set("dateFormat", String(dateFormat));
     if (bookmakers) url.searchParams.set("bookmakers", String(bookmakers));
 
-    const r = await fetch(url, { method: "GET" });
+    const r = await fetch(url);
     const text = await r.text();
+    if (!r.ok) return res.status(r.status).json({ ok: false, status: r.status, error: text });
 
-    if (!r.ok) {
-      return res.status(r.status).json({
-        ok: false,
-        status: r.status,
-        error: text,
-      });
-    }
+    let data; try { data = JSON.parse(text); } catch { return res.status(502).json({ ok:false, error:"Invalid JSON from provider", raw:text }); }
 
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      return res.status(502).json({ ok: false, error: "Invalid JSON from provider", raw: text });
-    }
-
-    res.json({
-      ok: true,
-      sport,
-      region,
-      markets,
-      count: Array.isArray(data) ? data.length : undefined,
-      data,
-    });
+    res.json({ ok: true, sport, region, markets, count: Array.isArray(data) ? data.length : undefined, data });
   } catch (e) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
